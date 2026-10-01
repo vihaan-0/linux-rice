@@ -1,0 +1,155 @@
+cd ~/fetch
+
+python3 - <<'PY'
+from pathlib import Path
+
+p = Path("fetch.c")
+s = p.read_text()
+
+# Proper 256-color config colors
+s = s.replace(
+    'else snprintf(config_logo_outer, sizeof(config_logo_outer), "\\033[1;%sm", val);',
+    'else snprintf(config_logo_outer, sizeof(config_logo_outer), "\\033[1;38;5;%sm", val);'
+)
+
+s = s.replace(
+    'else snprintf(config_logo_inner, sizeof(config_logo_inner), "\\033[1;%sm", val);',
+    'else snprintf(config_logo_inner, sizeof(config_logo_inner), "\\033[1;38;5;%sm", val);'
+)
+
+# Always use the Arch logo, while keeping the actual system information
+s = s.replace(
+    '      got_logo = load_logo_fastfetch(distro);',
+    '      got_logo = load_logo_fastfetch("arch");',
+    1
+)
+
+# Remove Fastfetch's own logo colors
+start = s.index("static int load_logo_ff_colored")
+end = s.index("// Fallback: load from --print-logos", start)
+
+new_logo_loader = r'''static int load_logo_ff_colored(const char *name) {
+  char cmd[256];
+  snprintf(cmd, sizeof(cmd),
+           "fastfetch -c none -l %s -s break --pipe false 2>/dev/null", name);
+  FILE *fp = popen(cmd, "r");
+  if (!fp)
+    return 0;
+
+  char buf[512];
+
+  while (logo_rows < MAX_LOGO_ROWS && fgets(buf, sizeof(buf), fp)) {
+    int len = strlen(buf);
+
+    while (len > 0 && (buf[len - 1] == '\n' || buf[len - 1] == '\r'))
+      buf[--len] = '\0';
+
+    char clean[512];
+    int j = 0;
+
+    for (int i = 0; i < len && j < (int)sizeof(clean) - 1; i++) {
+      if (buf[i] == '\033' && buf[i + 1] == '[') {
+        int k = i + 2;
+
+        while (k < len &&
+               ((buf[k] >= '0' && buf[k] <= '9') || buf[k] == ';'))
+          k++;
+
+        if (k < len && buf[k] == 'm') {
+          i = k;
+          continue;
+        }
+      }
+
+      clean[j++] = buf[i];
+    }
+
+    clean[j] = '\0';
+
+    while (j > 0 && (clean[j - 1] == ' ' || clean[j - 1] == '\r'))
+      clean[--j] = '\0';
+
+    if (j == 0 && logo_rows == 0)
+      continue;
+
+    memcpy(logo_data[logo_rows], clean, j + 1);
+    logo_rows++;
+  }
+
+  pclose(fp);
+
+  while (logo_rows > 0 && logo_data[logo_rows - 1][0] == '\0')
+    logo_rows--;
+
+  return logo_rows > 0;
+}
+
+'''
+
+s = s[:start] + new_logo_loader + s[end:]
+
+# Make info labels use proper 256-color ANSI
+old = '''  snprintf(line, sizeof(line), "\\033[1;%sm%s\\033[0m: %s", label_color, label,
+           val);'''
+
+new = '''  snprintf(line, sizeof(line), "\\033[1;38;5;%sm%s\\033[0m: %s", label_color,
+           label, val);'''
+
+if old not in s:
+    raise SystemExit("add_info color line not found.")
+
+s = s.replace(old, new, 1)
+
+# Make pixel@VOID lavender
+old = '''  snprintf(line, sizeof(line), "\\033[1;38;5;135m%s\\033[0m@\\033[1;38;5;135m%s\\033[0m",
+           user, host);'''
+
+new = '''  snprintf(line, sizeof(line), "\\033[1;38;5;183m%s\\033[0m@\\033[1;38;5;183m%s\\033[0m",
+           user, host);'''
+
+if old not in s:
+    raise SystemExit("Title color line not found.")
+
+s = s.replace(old, new, 1)
+
+p.write_text(s)
+PY
+
+mkdir -p ~/.config/fetch
+
+cat > ~/.config/fetch/config <<'EOF'
+label_color=183
+
+os
+host
+kernel
+uptime
+packages
+shell
+display
+wm
+theme
+icons
+font
+cursor
+terminal
+cpu
+gpu
+memory
+swap
+disk
+ip
+battery
+locale
+colors
+
+logo_outer=55
+logo_inner=141
+EOF
+
+make clean
+make
+
+sudo cp fetch /usr/local/bin/fetch
+
+fetch
